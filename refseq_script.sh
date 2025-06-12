@@ -19,11 +19,14 @@
 set -e
 set -o pipefail
 
+# --- Tool and URL Variables ---
+GTF_TO_GENE_PRED_URL="http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/gtfToGenePred"
+GENE_PRED_TO_BED_URL="http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/genePredToBed"
+
 # --- File and URL Variables ---
 REFSEQ_GTF_URL="https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/annotation/GRCh38_latest/refseq_identifiers/GRCh38_latest_genomic.gtf.gz"
 MANE_URL="https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/release_1.2/MANE.GRCh38.v1.2.summary.txt.gz" # Assumed available from previous script
 AVENIO_GENE_LIST="avenio/avenio_genes.txt"
-SOURCE_BED="beds/ncbiRefSeq_ucsc_wg.bed"
 
 # --- Output Files ---
 mkdir -p data beds/final avenio/final
@@ -32,14 +35,20 @@ REFSEQ_GTF_GZ="data/GRCh38_latest_genomic.gtf.gz"
 MANE_SUMMARY_GZ="data/MANE.GRCh38.v1.2.summary.txt.gz"
 GENE_TX_MAP="data/refseq_gene_tx_map.tsv"
 MANE_REFSEQ_TX="data/mane_refseq_tx.txt"
+REFSEQ_GP="data/refseq.gp"
+
+SOURCE_BED_TMP="beds/refseq.tmp.bed"
+SOURCE_BED="beds/refseq.bed"
 
 FINAL_REFSEQ_BED="beds/final/refseq_final_tagged.bed"
 FINAL_AVENIO_BED="avenio/final/refseq_avenio_subset.bed"
 
 # --- Headers for BED Tracks ---
-REFSEQ_HEADER='track name="NCBI RefSeq (Coloured)" description="MANE purple, Models orange, Curated blue" itemRgb="On" db=hg38'
-AVENIO_HEADER='track name="Avenio Gene Subset (RefSeq)" description="Avenio panel genes from RefSeq" itemRgb="On" db=hg38'
+REFSEQ_HEADER='track name="NCBI RefSeq (Coloured)" description="MANE purple, Models orange, Curated blue" itemRgb="On" db="hg38"'
+AVENIO_HEADER='track name="Avenio Gene Subset (RefSeq)" description="Avenio panel genes from RefSeq" itemRgb="On" db="hg38"'
 
+# --- New RBG value ---
+NEW_RGB_VALUE="0,0,0"
 
 ################################################################################
 ### STEP 1: Download Data and Prepare Mapping Files
@@ -59,20 +68,42 @@ gunzip -c "$REFSEQ_GTF_GZ" | gawk -F'\t' '
     }
 ' > "$GENE_TX_MAP"
 
-# echo "--> Downloading MANE summary (if not present)..."
-# # The -nc flag prevents re-downloading if the file already exists.
-# wget -nc -O "$MANE_SUMMARY_GZ" "$MANE_URL"
+echo "--> Downloading MANE summary (if not present)..."
+# The -nc flag prevents re-downloading if the file already exists.
+wget -nc -O "$MANE_SUMMARY_GZ" "$MANE_URL"
 
 echo "--> Extracting MANE RefSeq transcript IDs..."
 # Extract the 2nd column (RefSeq ID) from the MANE summary, skipping the header.
-gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $6, $8}' > "$MANE_REFSEQ_TX"
+gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $6}' > "$MANE_REFSEQ_TX"
 
 # Note: The original script downloaded hgdownload.soe.ucsc.edu/.../refGene.txt.gz
 # but never used it. That download has been removed to avoid unnecessary work.
 
 
 ################################################################################
-### STEP 2: Process RefSeq Track (Rename, Colour, and Tag in ONE pass)
+### STEP 2: Make the Source Bed Files
+################################################################################
+
+echo "--> Making the Source Bed Files..."
+
+wget "$GTF_TO_GENE_PRED_URL"
+wget "$GENE_PRED_TO_BED_URL"
+
+# Make the files executable
+chmod +x gtfToGenePred genePredToBed
+
+./gtfToGenePred -ignoreGroupsWithoutExons "$REFSEQ_GTF_GZ" "$REFSEQ_GP"
+./genePredToBed "$REFSEQ_GP" "$SOURCE_BED_TMP"
+
+gawk -v OFS='\t' -v new_rgb="$NEW_RGB_VALUE" '
+    {
+        print $1, $2, $3, $4, $5, $6, $7, $8, new_rgb, $10, $11, $12
+    }
+
+' "$SOURCE_BED_TMP" > "$SOURCE_BED"
+
+################################################################################
+### STEP 3: Process RefSeq Track (Rename, Colour, and Tag in ONE pass)
 ################################################################################
 
 echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
@@ -82,7 +113,7 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
 # headered output in one go.
 {
     echo "$REFSEQ_HEADER"
-    gawk -v OFS='\t' '
+    gawk -F'\t' '
         # Block 1: Load gene-to-transcript map
         FNR==NR {
             map[$2] = $1; # map[transcript_id] = gene_symbol
@@ -122,7 +153,7 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
             }
 
             # --- Step B: Construct the final GFF-style attributes for column 4 ---
-            gff_attributes = "Name=" gene_symbol "(" current_tx ");alias=" gene_symbol;
+            gff_attributes = "Name=" gene_symbol "(" current_tx ");id=" current_tx ";alias=" gene_symbol;
             if (note_text != "") {
                 # Add the note with spaces, correctly wrapped in quotes
                 gff_attributes = gff_attributes ";note=" note_text
@@ -140,7 +171,7 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
 
 
 ################################################################################
-### STEP 3: Create Avenio Subset
+### STEP 4: Create Avenio Subset
 ################################################################################
 
 echo "--> Creating Avenio gene subset for RefSeq..."
