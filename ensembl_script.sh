@@ -19,12 +19,17 @@
 set -e
 set -o pipefail
 
+# --- Tool Variables ---
+BIG_BED_TO_BED_URL="http://hgdownload.soe.ucsc.edu/admin/exe/macOSX.arm64/bigBedToBed"
+
 # --- File and URL Variables ---
 # Makes updating versions and filenames easy.
 GENCODE_URL="https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_48/gencode.v48.annotation.gtf.gz"
 MANE_URL="https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/release_1.2/MANE.GRCh38.v1.2.summary.txt.gz"
 AVENIO_GENE_LIST="avenio/avenio_genes.txt"
-SOURCE_BED="beds/gencode_ucsc_knownGene_wg.bed" # from UCSC genome table 
+ENSEMBLE_BB_URL="http://hgdownload.soe.ucsc.edu/gbdb/hg38/gencode/gencodeV48.bb"
+SOURCE_BED_TMP="beds/gencodeV48.bed"
+SOURCE_BED="beds/ensembl.bed"
 
 # --- Output Files ---
 # Organize output into directories.
@@ -70,11 +75,36 @@ wget -O "$MANE_SUMMARY_GZ" "$MANE_URL"
 
 echo "--> Extracting MANE Ensembl transcript IDs..."
 # Extract the 3rd column (Ensembl ID) from the MANE summary, skipping the header.
-gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $6, $8}'  > "$MANE_ENSEMBL_TX"
+gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $8}'  > "$MANE_ENSEMBL_TX"
 
 
 ################################################################################
-### STEP 2: Process Ensembl Track (Rename, Colour, and Tag in ONE pass)
+### STEP 2: Make the Source Bed Files
+################################################################################
+
+echo "--> Making the Source Bed file"
+
+#Download the UCSC tool bigBedToBed
+wget "$BIG_BED_TO_BED_URL"
+
+#make executable
+chmod +x bigBedToBed
+
+# Convert the bigBed to bed file format
+./bigBedToBed "$ENSEMBLE_BB_URL" stdout > "$SOURCE_BED_TMP"
+
+# Slimline the beds
+NEW_RGB_VALUE="0,0,0"
+gawk -v OFS='\t' -v new_rgb="$NEW_RGB_VALUE" '
+    # For each line in the BED file, print the fields separated by OFS.
+    # Replace the original 9th field (the default rgb value) with our new one.
+    {
+        print $1, $2, $3, $4, $5, $6, $7, $8, new_rgb, $10, $11, $12
+    }
+' "$SOURCE_BED_TMP" > "$SOURCE_BED"
+
+################################################################################
+### STEP 3: Process Ensembl Track (Rename, Colour, and Tag in ONE pass)
 ################################################################################
 
 echo "--> Processing Ensembl BED file (Rename, Colour, Tag)..."
@@ -93,7 +123,7 @@ echo "--> Processing Ensembl BED file (Rename, Colour, Tag)..."
 
         # Block 2: Load MANE transcript IDs (gawk-specific ARGIND)
         ARGIND==2 {
-            mane[$3] = 1; # Store MANE IDs in an array
+            mane[$2] = 1; # Store MANE IDs in an array
             next;
         }
 
@@ -131,7 +161,7 @@ echo "--> Processing Ensembl BED file (Rename, Colour, Tag)..."
 
 
 ################################################################################
-### STEP 3: Create Avenio Subset
+### STEP 4: Create Avenio Subset
 ################################################################################
 
 echo "--> Creating Avenio gene subset..."
