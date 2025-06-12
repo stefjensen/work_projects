@@ -50,22 +50,22 @@ wget -O "$REFSEQ_GTF_GZ" "$REFSEQ_GTF_URL"
 
 echo "--> Generating Gene-to-Transcript map from RefSeq GTF..."
 # Use a single, efficient awk command on the stream to avoid a huge intermediate file.
-gunzip -c "$REFSEQ_GTF_GZ" | gawk '
+gunzip -c "$REFSEQ_GTF_GZ" | gawk -F'\t' '
     $3 == "transcript" {
         # Robustly find key-value pairs using match()
-        if (match($9, /gene_name "([^"]+)"/, gene) && match($9, /transcript_id "([^"]+)"/, tx)) {
+        if (match($9, /gene_id "([^"]+)"/, gene) && match($9, /transcript_id "([^"]+)"/, tx)) {
             print gene[1] "\t" tx[1]
         }
     }
 ' > "$GENE_TX_MAP"
 
-echo "--> Downloading MANE summary (if not present)..."
-# The -nc flag prevents re-downloading if the file already exists.
-wget -nc -O "$MANE_SUMMARY_GZ" "$MANE_URL"
+# echo "--> Downloading MANE summary (if not present)..."
+# # The -nc flag prevents re-downloading if the file already exists.
+# wget -nc -O "$MANE_SUMMARY_GZ" "$MANE_URL"
 
 echo "--> Extracting MANE RefSeq transcript IDs..."
 # Extract the 2nd column (RefSeq ID) from the MANE summary, skipping the header.
-gunzip -c "$MANE_SUMMARY_GZ" | awk 'NR > 1 {print $2}' > "$MANE_REFSEQ_TX"
+gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $6, $8}' > "$MANE_REFSEQ_TX"
 
 # Note: The original script downloaded hgdownload.soe.ucsc.edu/.../refGene.txt.gz
 # but never used it. That download has been removed to avoid unnecessary work.
@@ -91,7 +91,7 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
 
         # Block 2: Load MANE transcript IDs (gawk-specific ARGIND)
         ARGIND==2 {
-            mane[$1] = 1; # Store MANE IDs in an array
+            mane[$2] = 1; # Store MANE IDs in an array
             next;
         }
 
@@ -106,7 +106,7 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
 
             if (current_tx in mane) {
                 colour = "128,0,128";   # Purple for MANE
-                note_text = "MANE select";
+                note_text = "MANE_select";
             } else if (current_tx ~ /^X[MRP]_/) {
                 colour = "213,94,0";    # Orange for Models (XM, XR, XP)
                 if (current_tx ~ /^XM_/) { note_text = "model_mRNA_transcript"; }
@@ -146,28 +146,35 @@ echo "--> Processing RefSeq BED file (Rename, Colour, Tag)..."
 echo "--> Creating Avenio gene subset for RefSeq..."
 
 # This awk command robustly finds the alias tag using match()
-{
     echo "$AVENIO_HEADER"
-    awk '
-        # Block 1: Load the gene list
-        NR==FNR {
-            genes[$1] = 1;
-            next;
-        }
+    gawk '
+    # Block 1: Load the gene list from the first file (AVENIO_GENE_LIST)
+    # This block only runs when the record number (NR) equals the file record number (FNR).
+    NR==FNR {
+        genes[$1] = 1
+        next
+    }
 
-        # Block 2: Filter the final tagged BED file
-        # Skip the track header line
-        /^track/ { next }
+    # Block 2: Process the second file (FINAL_REFSEQ_BED)
+    # This block runs for every line of the second file because NR is now greater than FNR.
 
+    # Pattern 1: Skip the track header line
+    /^track/ { next }
+
+    # Pattern 2: (Implicit) Run on all other lines of the second file
+    # This is the action block where your "if" statement belongs.
+    {
         # Efficiently find the gene symbol in the alias tag
         if (match($4, /alias=([^;]+)/, arr)) {
+            # Check if the extracted alias (arr[1]) exists as a key in our "genes" array
             if (arr[1] in genes) {
-                print $0;
+                print $0
             }
         }
-    ' "$AVENIO_GENE_LIST" "$FINAL_REFSEQ_BED"
+    }
+' "$AVENIO_GENE_LIST" "$FINAL_REFSEQ_BED" > "$FINAL_AVENIO_BED"
 
-} > "$FINAL_AVENIO_BED"
+
 
 echo "---"
 echo "✅ All tasks complete."
