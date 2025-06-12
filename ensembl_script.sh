@@ -9,7 +9,7 @@
 #   2. Creates a map of gene symbols to transcript IDs.
 #   3. Processes a source BED file to:
 #      - Rename features using the gene symbol.
-#      - Color MANE transcripts purple.
+#      - Colour MANE transcripts purple.
 #      - Add GFF-style attributes for rich IGV pop-ups.
 #   4. Creates a final subset track based on a gene list.
 # ==============================================================================
@@ -53,9 +53,12 @@ wget -O "$GENCODE_GTF_GZ" "$GENCODE_URL"
 echo "--> Generating Gene-to-Transcript map from GTF..."
 # Use a single, efficient awk command to parse the gzipped GTF directly.
 # This avoids creating a huge intermediate uncompressed file.
-gunzip -c "$GENCODE_GTF_GZ" | gawk '
+gunzip -c "$GENCODE_GTF_GZ" | gawk -F'\t' '
+    # This pattern only runs on lines where the 3rd field is "transcript"
     $3 == "transcript" {
-        # gawk can robustly find key-value pairs
+        
+        # Now that we are correctly splitting on tabs, $9 is guaranteed
+        # to be the full attribute string. This logic should now work.
         if (match($9, /gene_name "([^"]+)"/, gene) && match($9, /transcript_id "([^"]+)"/, tx)) {
             print gene[1] "\t" tx[1]
         }
@@ -67,14 +70,14 @@ wget -O "$MANE_SUMMARY_GZ" "$MANE_URL"
 
 echo "--> Extracting MANE Ensembl transcript IDs..."
 # Extract the 3rd column (Ensembl ID) from the MANE summary, skipping the header.
-gunzip -c "$MANE_SUMMARY_GZ" | awk 'NR > 1 {print $3}' > "$MANE_ENSEMBL_TX"
+gunzip -c "$MANE_SUMMARY_GZ" | gawk -F'\t' -v OFS='\t' '!/^#/ {split($3, parts, ":"); print parts[1], $6, $8}'  > "$MANE_ENSEMBL_TX"
 
 
 ################################################################################
-### STEP 2: Process Ensembl Track (Rename, Color, and Tag in ONE pass)
+### STEP 2: Process Ensembl Track (Rename, Colour, and Tag in ONE pass)
 ################################################################################
 
-echo "--> Processing Ensembl BED file (Rename, Color, Tag)..."
+echo "--> Processing Ensembl BED file (Rename, Colour, Tag)..."
 
 # This single awk command replaces three separate file passes.
 # It reads the mapping files first, then processes the main BED file.
@@ -90,7 +93,7 @@ echo "--> Processing Ensembl BED file (Rename, Color, Tag)..."
 
         # Block 2: Load MANE transcript IDs (gawk-specific ARGIND)
         ARGIND==2 {
-            mane[$1] = 1; # Store MANE IDs in an array
+            mane[$3] = 1; # Store MANE IDs in an array
             next;
         }
 
@@ -106,19 +109,19 @@ echo "--> Processing Ensembl BED file (Rename, Color, Tag)..."
                 renamed_field = "UNKNOWN(" current_tx ")";
             }
 
-            # Step B: Determine color and note based on MANE status
-            color = "062,163,104"; # Default to green
+            # Step B: Determine colour and note based on MANE status
+            colour = "062,163,104"; # Default to green
             note = "";
             if (current_tx in mane) {
-                color = "128,0,128"; # Purple for MANE
+                colour = "128,0,128"; # Purple for MANE
                 note = ";note=MANE_Select";
             }
 
             # Step C: Construct the final GFF-style attributes for column 4
             $4 = "Name=" renamed_field ";id=" current_tx ";alias=" gene_symbol note;
 
-            # Step D: Set the color in column 9
-            $9 = color;
+            # Step D: Set the colour in column 9
+            $9 = colour;
 
             print $0;
         }
@@ -137,7 +140,7 @@ echo "--> Creating Avenio gene subset..."
 # instead of splitting the string multiple times.
 {
     echo "$AVENIO_HEADER"
-    awk '
+    gawk '
         # Block 1: Load the gene list
         NR==FNR {
             genes[$1] = 1;
